@@ -1510,12 +1510,30 @@
          */
 
         const CONFIG = {
-            endpoint: '',
+            endpoint: 'http://100.84.47.68:7070/status',
             refreshInterval: 30000,
-            demoMode: true,
+            demoMode: true,  // flips to false automatically if endpoint responds
             n8nWebhook: '',
             githubJsonUrl: ''
         };
+
+        // Auto-detect live endpoint — fall back to demo silently if unreachable
+        async function tryLiveEndpoint() {
+            if (!CONFIG.endpoint) return false;
+            try {
+                const res = await fetch(CONFIG.endpoint, { signal: AbortSignal.timeout(4000) });
+                if (!res.ok) return false;
+                const data = await res.json();
+                if (data && data.services) {
+                    CONFIG.demoMode = false;
+                    console.log('[CORTEX] Live endpoint connected:', CONFIG.endpoint);
+                    return data;
+                }
+            } catch (e) {
+                console.warn('[CORTEX] Live endpoint unreachable, using demo mode');
+            }
+            return false;
+        }
 
         // Demo Data
         const DEMO_SERVICES = [
@@ -2365,6 +2383,51 @@
 
         setupPWA();
         init();
+
+        // ── Live data polling ──
+        async function fetchAndApplyLiveData() {
+            const data = await tryLiveEndpoint();
+            if (!data) return; // demo mode stays
+
+            // Services
+            if (data.services) {
+                APP_STATE.services = data.services.map(s => ({
+                    ...s,
+                    details: s.details || {}
+                }));
+            }
+
+            // Workflows
+            if (data.workflows) {
+                APP_STATE.workflows = data.workflows.map(w => ({
+                    ...w,
+                    statusText: w.status === 'firing' ? 'Firing' : w.status === 'failing' ? 'Error' : 'Unverified',
+                }));
+            }
+
+            // Summary ring
+            if (data.summary) {
+                const parts = data.summary.servicesOnline.split('/');
+                APP_STATE.data.servicesOnline = parseInt(parts[0]);
+                APP_STATE.data.servicesTotal  = parseInt(parts[1]);
+                document.getElementById('ringNumber').textContent = data.summary.servicesOnline;
+            }
+
+            // Events
+            if (data.events && data.events.length) {
+                APP_STATE.events = data.events.map(e => ({
+                    ...e,
+                    time: new Date(e.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+                }));
+            }
+
+            // Re-render affected tabs
+            renderServices();
+        }
+
+        // Initial live fetch + poll every 30s
+        fetchAndApplyLiveData();
+        setInterval(fetchAndApplyLiveData, CONFIG.refreshInterval);
     </script>
 </body>
 </html>
